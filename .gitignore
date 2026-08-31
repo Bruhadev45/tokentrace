@@ -1,0 +1,11 @@
+# Binaries
+/tokentrace
+/dist/
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.html
+
+# OS noise
+.DS_Store
