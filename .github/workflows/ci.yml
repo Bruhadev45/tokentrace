@@ -19,7 +19,7 @@ jobs:
           # minimum supported version; Linux only - Go 1.22 binaries
           # trip over the LC_UUID requirement on current macOS runners
           - os: ubuntu-latest
-            go: "1.22
+            go: "1.22"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
