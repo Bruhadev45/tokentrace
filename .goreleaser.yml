@@ -1,0 +1,56 @@
+# Release build matrix for tokentrace. Runs in CI on every v* tag
+# (.github/workflows/release.yml); `make snapshot` runs it locally.
+version: 2
+
+project_name: tokentrace
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: tokentrace
+    main: ./cmd/tokentrace
+    binary: tokentrace
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    # main.version is the only symbol stamped at build time; see main.go.
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    # Reproducible: binary mtime tracks the commit, not the build clock.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: tokentrace
+    ids: [tokentrace]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [README.md, LICENSE]
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:", "^ci:"]
+
+release:
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Install
+
+    Download the archive for your platform, verify it against
+    `checksums.txt`, and put the `tokentrace` binary on your `PATH`.
+    Or build from source: `go install github.com/Bruhadev45/tokentrace/cmd/tokentrace@{{ .Tag }}`

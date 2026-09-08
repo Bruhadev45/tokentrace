@@ -17,6 +17,26 @@ in the terminal.
 
 ## Install
 
+### Prebuilt binary (no Go toolchain needed)
+
+Every `v*` tag publishes archives for macOS, Linux and Windows on both
+amd64 and arm64, plus a `checksums.txt` (SHA-256), to the
+[releases page](https://github.com/Bruhadev45/tokentrace/releases).
+
+```sh
+V=0.2.0 OS=darwin ARCH=arm64          # adjust to your platform
+base=https://github.com/Bruhadev45/tokentrace/releases/download/v$V
+curl -sSLO $base/tokentrace_${V}_${OS}_${ARCH}.tar.gz
+curl -sSLO $base/checksums.txt
+shasum -a 256 --ignore-missing -c checksums.txt
+tar xzf tokentrace_${V}_${OS}_${ARCH}.tar.gz tokentrace
+sudo mv tokentrace /usr/local/bin/
+```
+
+Windows archives are `.zip` with the same naming.
+
+### From source
+
 Requires Go 1.22+.
 
 ```sh
@@ -180,7 +200,14 @@ make vet     # go vet ./...
 make fmt     # fails if gofmt would change anything
 make build   # build ./tokentrace with the version stamped in
 make demo    # seed a throwaway log and print real stats output
+make cross   # cross-compile every released platform into dist/
 ```
+
+Releases are cut by [goreleaser](https://goreleaser.com) from
+`.goreleaser.yml`: push a `v*` tag and `.github/workflows/release.yml`
+builds the six platform archives, the checksum file and the changelog.
+`make snapshot` runs the same pipeline locally without publishing, and
+`make cross` covers the build matrix without goreleaser installed.
 
 The end-to-end test spins up a fake upstream (OpenAI JSON + Anthropic SSE),
 proxies real HTTP through tokentrace, and asserts the records that land in
