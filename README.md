@@ -128,6 +128,23 @@ normalized so this is comparable across providers: `INPUT` is always the
 so tokentrace subtracts them out; Anthropic's `input_tokens` already
 excludes cache reads/writes).
 
+## Provider matrix
+
+| Endpoint | Non-streaming | Streaming | Usage needs a client option? |
+| --- | --- | --- | --- |
+| Anthropic `/v1/messages` | yes | yes — `message_start` + `message_delta` | no |
+| OpenAI `/v1/responses` | yes | yes — `response.completed` (also `.incomplete` / `.failed`) | no |
+| OpenAI `/v1/chat/completions` | yes | final extra chunk, opt-in | **yes** — `stream_options.include_usage` |
+| Anything else | request recorded, usage unknown | request recorded, usage unknown | — |
+
+Cache accounting follows the same split everywhere: Anthropic reports
+`cache_read_input_tokens` / `cache_creation_input_tokens` alongside an
+already-exclusive `input_tokens`, while both OpenAI dialects fold the
+cached share into their input count (`prompt_tokens_details.cached_tokens`
+for chat completions, `input_tokens_details.cached_tokens` for Responses),
+so tokentrace subtracts it back out. Responses API reasoning tokens are
+already part of `output_tokens` and are priced as output.
+
 ## How streaming usage works
 
 tokentrace parses SSE streams incrementally as bytes flow to your client —
@@ -139,8 +156,17 @@ event carries the model, `input_tokens`, `cache_read_input_tokens`, and
 cumulative `output_tokens`. Usage is always present — Anthropic streams are
 fully accounted with no client changes.
 
-**OpenAI** (`/v1/chat/completions` with `"stream": true`): usage arrives
-only in a final extra chunk, and **only if the client asked for it**:
+**OpenAI Responses** (`/v1/responses` with `"stream": true`): every
+`response.*` event carries the response object, and the terminal event —
+`response.completed`, or `response.incomplete` / `response.failed` for a
+run that was cut short — carries its `usage`. Nothing has to be enabled
+client-side, so Responses streams are fully accounted like Anthropic's.
+The dialect reports `input_tokens` / `output_tokens` exactly as Anthropic
+does, so tokentrace tells the two apart by the response object itself.
+
+**OpenAI chat completions** (`/v1/chat/completions` with `"stream": true`):
+usage arrives only in a final extra chunk, and **only if the client asked
+for it**:
 
 ```json
 { "stream": true, "stream_options": { "include_usage": true } }
@@ -181,16 +207,18 @@ mixed into real spend.
 
 ## Limitations
 
-- **OpenAI streams need `stream_options.include_usage`** (see above);
-  otherwise tokens for that request are recorded as unknown.
+- **OpenAI chat-completions streams need `stream_options.include_usage`**
+  (see above); otherwise tokens for that request are recorded as unknown.
+  `/v1/responses` streams need nothing.
 - **Prices are estimates** from a static table — verify against your
   provider's bill. Unknown models cost `$0` with a `no price` marker.
 - One proxy fronts one upstream. Run one `serve` per provider (different
   ports).
 - Non-streaming response bodies larger than 8 MiB are relayed fine but
   recorded with unknown usage (the buffered copy is capped).
-- Anthropic and OpenAI chat dialects are parsed; other body shapes are
-  proxied untouched and recorded with unknown usage.
+- The Anthropic messages, OpenAI chat-completions and OpenAI Responses
+  dialects are parsed; other body shapes are proxied untouched and
+  recorded with unknown usage.
 
 ## Development
 
@@ -209,9 +237,10 @@ builds the six platform archives, the checksum file and the changelog.
 `make snapshot` runs the same pipeline locally without publishing, and
 `make cross` covers the build matrix without goreleaser installed.
 
-The end-to-end test spins up a fake upstream (OpenAI JSON + Anthropic SSE),
-proxies real HTTP through tokentrace, and asserts the records that land in
-the JSONL — including latency and per-field token counts.
+The end-to-end tests spin up a fake upstream (OpenAI JSON, Anthropic SSE
+and OpenAI Responses SSE), proxy real HTTP through tokentrace, and assert
+the records that land in the JSONL — including latency and per-field token
+counts.
 
 ## License
 

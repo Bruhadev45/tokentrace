@@ -36,6 +36,10 @@ func TestDetectProviderFromBody(t *testing.T) {
 		{"anthropic sse start", `{"type":"message_start","message":{}}`, Anthropic},
 		{"openai completion", `{"object":"chat.completion","usage":{"prompt_tokens":1}}`, OpenAI},
 		{"openai chunk", `{"object":"chat.completion.chunk"}`, OpenAI},
+		{"openai responses body", `{"id":"resp_1","object":"response","usage":{"input_tokens":9}}`, OpenAI},
+		{"openai responses spaced", `{"object": "response"}`, OpenAI},
+		{"openai responses event", `{"type":"response.completed","response":{"usage":{"input_tokens":9}}}`, OpenAI},
+		{"openai responses delta event", `{"type":"response.output_text.delta","delta":"hi"}`, OpenAI},
 		{"unrecognized", `{"hello":"world"}`, Unknown},
 		{"empty", ``, Unknown},
 	}
@@ -98,7 +102,20 @@ func TestParseOpenAIJSON(t *testing.T) {
 			body: `{"model":"gpt-4o","usage":{"prompt_tokens":5,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":9}}}`,
 			want: Usage{InputTokens: 0, OutputTokens: 1, CachedTokens: 9, Model: "gpt-4o", Known: true},
 		},
+		{
+			name: "responses dialect with cached tokens",
+			body: `{"id":"resp_1","object":"response","status":"completed","model":"gpt-4.1-2025-04-14",
+				"usage":{"input_tokens":120,"input_tokens_details":{"cached_tokens":64},
+				"output_tokens":48,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":168}}`,
+			want: Usage{InputTokens: 56, OutputTokens: 48, CachedTokens: 64, Model: "gpt-4.1-2025-04-14", Known: true},
+		},
+		{
+			name: "responses dialect without usage",
+			body: `{"id":"resp_2","object":"response","status":"in_progress","model":"gpt-5-mini","usage":null}`,
+			want: Usage{Model: "gpt-5-mini"},
+		},
 		{name: "malformed json", body: `{"usage":`, wantErr: true},
+		{name: "malformed responses json", body: `{"object":"response","usage":`, wantErr: true},
 		{name: "empty body", body: ``, wantErr: true},
 	}
 	for _, tt := range tests {
@@ -160,6 +177,7 @@ func TestParseAnthropicJSON(t *testing.T) {
 func TestParseJSONDispatch(t *testing.T) {
 	openAIBody := `{"object":"chat.completion","model":"gpt-4o","usage":{"prompt_tokens":10,"completion_tokens":2}}`
 	anthropicBody := `{"type":"message","model":"claude-sonnet-4-5","usage":{"input_tokens":10,"output_tokens":2}}`
+	responsesBody := `{"object":"response","model":"gpt-4.1","usage":{"input_tokens":10,"output_tokens":2}}`
 	tests := []struct {
 		name         string
 		hint         Provider
@@ -171,6 +189,7 @@ func TestParseJSONDispatch(t *testing.T) {
 		{"explicit anthropic", Anthropic, anthropicBody, Anthropic, true},
 		{"sniffed openai", Unknown, openAIBody, OpenAI, true},
 		{"sniffed anthropic", Unknown, anthropicBody, Anthropic, true},
+		{"sniffed openai responses", Unknown, responsesBody, OpenAI, true},
 		{"undetectable", Unknown, `{"foo":1}`, Unknown, false},
 	}
 	for _, tt := range tests {

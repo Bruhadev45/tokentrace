@@ -19,9 +19,14 @@ const maxSSELine = 1 << 20
 //   - Anthropic: message_start carries the model, input tokens and cache
 //     read/creation tokens; message_delta carries the (cumulative) output
 //     tokens. Later values overwrite earlier ones.
-//   - OpenAI: chunks carry the model; the final chunk carries a usage
-//     object only when the client set stream_options.include_usage. If no
-//     usage ever appears, Usage().Known stays false.
+//   - OpenAI chat completions: chunks carry the model; the final chunk
+//     carries a usage object only when the client set
+//     stream_options.include_usage. If no usage ever appears,
+//     Usage().Known stays false.
+//   - OpenAI Responses API: every response.* event carries the response
+//     object with the model; the terminal events (response.completed, and
+//     response.incomplete / response.failed for interrupted runs) carry
+//     its usage. No client option is needed.
 type SSEAccumulator struct {
 	provider Provider
 	line     []byte
@@ -152,12 +157,24 @@ func (a *SSEAccumulator) consumeAnthropic(data []byte) {
 	}
 }
 
+// responsesEnvelope is the response object carried by every Responses API
+// stream event. Usage is non-null only on the terminal ones.
+type responsesEnvelope struct {
+	Model string                `json:"model"`
+	Usage *openAIResponsesUsage `json:"usage"`
+}
+
 func (a *SSEAccumulator) consumeOpenAI(data []byte) {
 	var chunk struct {
-		Model string       `json:"model"`
-		Usage *openAIUsage `json:"usage"`
+		Model    string             `json:"model"`
+		Usage    *openAIUsage       `json:"usage"`
+		Response *responsesEnvelope `json:"response"`
 	}
 	if json.Unmarshal(data, &chunk) != nil {
+		return
+	}
+	if chunk.Response != nil {
+		a.consumeOpenAIResponses(chunk.Response)
 		return
 	}
 	if chunk.Model != "" {
@@ -171,10 +188,23 @@ func (a *SSEAccumulator) consumeOpenAI(data []byte) {
 	a.u = got
 }
 
-// ParseOpenAIStream extracts usage from a complete OpenAI SSE body. When
-// the client did not set stream_options.include_usage there is no usage
-// chunk; the result then has Known == false (tokens unknown, model still
-// recovered from the chunks when present).
+// consumeOpenAIResponses folds one Responses API event into the totals.
+// The model arrives with the first event (response.created) and the usage
+// with the last, so an interrupted stream still yields the model.
+func (a *SSEAccumulator) consumeOpenAIResponses(ev *responsesEnvelope) {
+	if ev.Model != "" {
+		a.u.Model = ev.Model
+	}
+	if ev.Usage != nil {
+		a.u = ev.Usage.toUsage(a.u.Model)
+	}
+}
+
+// ParseOpenAIStream extracts usage from a complete OpenAI SSE body, in
+// either the chat-completions or the Responses dialect. When a chat
+// completions client did not set stream_options.include_usage there is no
+// usage chunk; the result then has Known == false (tokens unknown, model
+// still recovered from the chunks when present).
 func ParseOpenAIStream(body []byte) Usage {
 	return parseStream(OpenAI, body)
 }

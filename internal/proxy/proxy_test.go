@@ -38,6 +38,14 @@ var anthropicSSEChunks = []string{
 	"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 }
 
+// The Responses API always ends with a terminal event carrying usage, so
+// no client-side option is needed to account for the stream.
+var openAIResponsesSSEChunks = []string{
+	"event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_01\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"gpt-4.1-2025-04-14\",\"output\":[],\"usage\":null}}\n\n",
+	"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_01\",\"output_index\":0,\"content_index\":0,\"delta\":\"Hello\"}\n\n",
+	"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_01\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"gpt-4.1-2025-04-14\",\"usage\":{\"input_tokens\":120,\"input_tokens_details\":{\"cached_tokens\":64},\"output_tokens\":48,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":168}}}\n\n",
+}
+
 var openAISSENoUsageChunks = []string{
 	"data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"}}]}\n\n",
 	"data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
@@ -45,8 +53,9 @@ var openAISSENoUsageChunks = []string{
 }
 
 // newUpstream returns a fake LLM API able to answer with (a) an OpenAI JSON
-// completion, (b) an Anthropic SSE stream, and (c) an OpenAI SSE stream
-// with no usage chunk. It asserts auth headers arrived intact.
+// completion, (b) an Anthropic SSE stream, (c) an OpenAI Responses SSE
+// stream and (d) an OpenAI chat SSE stream with no usage chunk. It asserts
+// auth headers arrived intact.
 func newUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
 	streamOut := func(w http.ResponseWriter, chunks []string) {
@@ -77,6 +86,11 @@ func newUpstream(t *testing.T) *httptest.Server {
 				t.Errorf("upstream x-api-key = %q, want pass-through key", got)
 			}
 			streamOut(w, anthropicSSEChunks)
+		case "/v1/responses":
+			if got := r.Header.Get("Authorization"); got != "Bearer "+testAuthToken {
+				t.Errorf("upstream Authorization = %q, want pass-through bearer token", got)
+			}
+			streamOut(w, openAIResponsesSSEChunks)
 		case "/v1/stream-no-usage":
 			streamOut(w, openAISSENoUsageChunks)
 		default:
@@ -248,6 +262,44 @@ func TestProxyEndToEnd(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "Hello") {
 		t.Error("response content leaked into the records file")
+	}
+}
+
+// TestProxyOpenAIResponsesStream covers the Responses API end to end: its
+// usage object is spelled like Anthropic's, so the record must still be
+// attributed to OpenAI, with the cached share split out of the input.
+func TestProxyOpenAIResponsesStream(t *testing.T) {
+	upstream := newUpstream(t)
+	defer upstream.Close()
+	front, recordsPath := newProxy(t, upstream.URL)
+
+	status, body := postJSON(t, front.URL+"/v1/responses",
+		`{"model":"gpt-4.1","stream":true,"input":"hey"}`,
+		http.Header{"Authorization": {"Bearer " + testAuthToken}})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if want := strings.Join(openAIResponsesSSEChunks, ""); body != want {
+		t.Errorf("responses stream not passed through verbatim:\n got %q\nwant %q", body, want)
+	}
+
+	rec := waitForRecords(t, recordsPath, 1)[0]
+	if rec.Provider != "openai" {
+		t.Errorf("provider = %q (sniffed from body), want openai", rec.Provider)
+	}
+	if rec.Model != "gpt-4.1-2025-04-14" {
+		t.Errorf("model = %q, want gpt-4.1-2025-04-14", rec.Model)
+	}
+	if rec.InputTokens != 56 || rec.OutputTokens != 48 || rec.CachedTokens != 64 {
+		t.Errorf("tokens in/out/cached = %d/%d/%d, want 56/48/64",
+			rec.InputTokens, rec.OutputTokens, rec.CachedTokens)
+	}
+	if rec.Unknown {
+		t.Error("record marked unknown, want usage from response.completed")
+	}
+	// (56*2 + 48*8 + 64*0.50) / 1e6
+	if !rec.Priced || math.Abs(rec.CostUSD-528e-6) > 1e-12 {
+		t.Errorf("cost = %v (priced=%v), want 5.28e-04 (true)", rec.CostUSD, rec.Priced)
 	}
 }
 
