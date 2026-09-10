@@ -1,0 +1,1 @@
+key,requests,input_tokens,output_tokens,cached_tokens,cache_creation_tokens,cost_usd,unpriced_requests,unknown_requests,avg_latency_ms,p95_latency_ms,cache_hit_rate

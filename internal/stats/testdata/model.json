@@ -1,0 +1,61 @@
+{
+  "by": "model",
+  "rows": [
+    {
+      "key": "claude-sonnet-4-5-20250929",
+      "requests": 3,
+      "input_tokens": 1200,
+      "output_tokens": 300,
+      "cached_tokens": 4800,
+      "cache_creation_tokens": 640,
+      "cost_usd": 0.045612,
+      "unpriced_requests": 0,
+      "unknown_requests": 0,
+      "avg_latency_ms": 200,
+      "p95_latency_ms": 300,
+      "cache_hit_rate": 0.8
+    },
+    {
+      "key": "mystery-model",
+      "requests": 2,
+      "input_tokens": 10,
+      "output_tokens": 2,
+      "cached_tokens": 0,
+      "cache_creation_tokens": 0,
+      "cost_usd": 0,
+      "unpriced_requests": 2,
+      "unknown_requests": 0,
+      "avg_latency_ms": 60,
+      "p95_latency_ms": 70,
+      "cache_hit_rate": 0
+    },
+    {
+      "key": "(unknown)",
+      "requests": 1,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cached_tokens": 0,
+      "cache_creation_tokens": 0,
+      "cost_usd": 0,
+      "unpriced_requests": 0,
+      "unknown_requests": 1,
+      "avg_latency_ms": 40,
+      "p95_latency_ms": 40,
+      "cache_hit_rate": null
+    }
+  ],
+  "total": {
+    "key": "TOTAL",
+    "requests": 6,
+    "input_tokens": 1210,
+    "output_tokens": 302,
+    "cached_tokens": 4800,
+    "cache_creation_tokens": 640,
+    "cost_usd": 0.045612,
+    "unpriced_requests": 2,
+    "unknown_requests": 1,
+    "avg_latency_ms": 126,
+    "p95_latency_ms": 300,
+    "cache_hit_rate": 0.7987
+  }
+}

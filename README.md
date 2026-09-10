@@ -74,6 +74,7 @@ make build          # produces ./tokentrace
    tokentrace stats                 # spend by model
    tokentrace stats --by project    # spend by project label
    tokentrace stats --by day --since 7d
+   tokentrace stats --json          # same numbers, machine-readable
    tokentrace tail                  # live view: one line per request
    ```
 
@@ -82,7 +83,7 @@ make build          # produces ./tokentrace
 | Command | What it does |
 | --- | --- |
 | `serve --upstream URL [--port 4141] [--project NAME]` | Run the recording proxy on 127.0.0.1. `--project` labels every record. |
-| `stats [--project NAME] [--since 24h\|7d\|2026-08-01] [--by model\|project\|day]` | Aggregated table: requests, tokens, est. cost, avg/p95 latency, cache-hit rate. |
+| `stats [--project NAME] [--since 24h\|7d\|2026-08-01] [--by model\|project\|day] [--json\|--csv] [--out FILE]` | Aggregated report: requests, tokens, est. cost, avg/p95 latency, cache-hit rate. Table by default; `--json`/`--csv` for machines, `--out` to write a file. |
 | `tail [--project NAME]` | Follow the log live; prints one formatted line per new record (polls every 500ms). |
 | `prices` | Print the built-in price table. |
 | `version` | Print the build version. |
@@ -127,6 +128,109 @@ normalized so this is comparable across providers: `INPUT` is always the
 *non-cached* input tokens (OpenAI's `prompt_tokens` includes cached tokens,
 so tokentrace subtracts them out; Anthropic's `input_tokens` already
 excludes cache reads/writes).
+
+## Machine-readable output
+
+`stats` renders the terminal table by default. Add `--json` or `--csv` for
+anything that isn't a human — a CI budget check, a spreadsheet, a dashboard
+— and `--out FILE` to write straight to a file instead of stdout (the
+confirmation line goes to stderr, so the file is the only output).
+
+```sh
+tokentrace stats --by project --json
+tokentrace stats --by day --csv --out spend.csv
+tokentrace stats --json | jq '.total.cost_usd'
+```
+
+### Field names
+
+These names are the interface: they are identical in both formats and will
+not be renamed or reordered without a major-version bump. Every count is a
+plain integer, not the comma-formatted string the table shows.
+
+| Field | Meaning |
+| --- | --- |
+| `key` | The group — model name, project label or `YYYY-MM-DD` day, per `--by`. |
+| `requests` | Requests in the group. |
+| `input_tokens` | Non-cached input tokens (normalized across providers, as in the table). |
+| `output_tokens` | Output tokens, including Responses-API reasoning tokens. |
+| `cached_tokens` | Cache-read tokens. |
+| `cache_creation_tokens` | Cache-write tokens (Anthropic; `0` elsewhere). |
+| `cost_usd` | Estimated cost, rounded to 6 decimals. |
+| `unpriced_requests` | Requests whose model had no price-table entry (the table's `*`). |
+| `unknown_requests` | Requests with no parseable usage at all. |
+| `avg_latency_ms` / `p95_latency_ms` | Latency over the group's requests. |
+| `cache_hit_rate` | `cached / (input + cached)` as a 0–1 fraction, or `null` (JSON) / empty (CSV) when the group has no input tokens — never a misleading `0`. |
+
+JSON wraps the rows in `{"by": ..., "rows": [...], "total": {...}}`, where
+`total` is the same shape aggregated over every row. CSV emits a header
+plus one row per group and **no** total line, so the file sums correctly
+when loaded into a dataframe; read the grand total from the JSON form.
+
+Both formats always produce a well-formed document — an empty `rows` array
+or a bare header row — when nothing matches the filters, so scripts never
+have to special-case the empty state.
+
+```
+$ tokentrace stats --by project --json
+{
+  "by": "project",
+  "rows": [
+    {
+      "key": "checkout-bot",
+      "requests": 45,
+      "input_tokens": 43912,
+      "output_tokens": 11435,
+      "cached_tokens": 269351,
+      "cache_creation_tokens": 44400,
+      "cost_usd": 0.409936,
+      "unpriced_requests": 0,
+      "unknown_requests": 0,
+      "avg_latency_ms": 1563,
+      "p95_latency_ms": 2882,
+      "cache_hit_rate": 0.8598
+    },
+    {
+      "key": "docs-search",
+      "requests": 33,
+      "input_tokens": 77728,
+      "output_tokens": 13270,
+      "cached_tokens": 21669,
+      "cache_creation_tokens": 3072,
+      "cost_usd": 0.124267,
+      "unpriced_requests": 0,
+      "unknown_requests": 0,
+      "avg_latency_ms": 1816,
+      "p95_latency_ms": 3734,
+      "cache_hit_rate": 0.218
+    }
+  ],
+  "total": {
+    "key": "TOTAL",
+    "requests": 78,
+    "input_tokens": 121640,
+    "output_tokens": 24705,
+    "cached_tokens": 291020,
+    "cache_creation_tokens": 47472,
+    "cost_usd": 0.534204,
+    "unpriced_requests": 0,
+    "unknown_requests": 0,
+    "avg_latency_ms": 1670,
+    "p95_latency_ms": 3630,
+    "cache_hit_rate": 0.7052
+  }
+}
+
+$ tokentrace stats --by model --csv
+key,requests,input_tokens,output_tokens,cached_tokens,cache_creation_tokens,cost_usd,unpriced_requests,unknown_requests,avg_latency_ms,p95_latency_ms,cache_hit_rate
+claude-sonnet-4-5-20250929,18,24777,7529,147851,28800,0.339621,0,0,2547,2983,0.8565
+gpt-4.1-2025-04-14,9,28486,6738,0,0,0.110876,0,0,3414,3815,0.0000
+claude-haiku-4-5-20251001,27,19135,3906,121500,15600,0.070315,0,0,907,1074,0.8639
+gpt-4o-mini-2024-07-18,24,49242,6532,21669,3072,0.013391,0,0,1216,1471,0.3056
+```
+
+Same seeded log as the table examples above, so the numbers line up
+row-for-row with the `--by model` and `--by project` tables.
 
 ## Provider matrix
 

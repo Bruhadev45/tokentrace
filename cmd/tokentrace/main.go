@@ -33,6 +33,7 @@ every LLM API request, to an append-only JSONL log on your machine.
 Usage:
   tokentrace serve --upstream URL [--port 4141] [--project NAME]
   tokentrace stats [--project NAME] [--since 24h|7d|2026-08-01] [--by model|project|day]
+                   [--json|--csv] [--out FILE]
   tokentrace tail
   tokentrace prices
   tokentrace version
@@ -140,8 +141,21 @@ func cmdStats(args []string, stdout, stderr io.Writer) error {
 	project := fs.String("project", "", "only include records for this project")
 	since := fs.String("since", "", `only include records after this ("30m", "24h", "7d" or "2026-08-01")`)
 	by := fs.String("by", "model", "group by: model, project or day")
+	asJSON := fs.Bool("json", false, "write JSON instead of the terminal table")
+	asCSV := fs.Bool("csv", false, "write CSV instead of the terminal table")
+	out := fs.String("out", "", "write the report to this file instead of stdout")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *asJSON && *asCSV {
+		return errors.New("--json and --csv are mutually exclusive")
+	}
+	format := stats.FormatTable
+	switch {
+	case *asJSON:
+		format = stats.FormatJSON
+	case *asCSV:
+		format = stats.FormatCSV
 	}
 	groupBy, err := stats.ParseBy(*by)
 	if err != nil {
@@ -160,24 +174,77 @@ func cmdStats(args []string, stdout, stderr io.Writer) error {
 		Project: *project,
 		Since:   sinceT,
 	})
-	if errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(stdout, "no records yet (looked in %s) — start the proxy with `tokentrace serve` first\n", path)
-		return nil
+	missing := errors.Is(err, os.ErrNotExist)
+	if err != nil && !missing {
+		return err
 	}
+	if missing {
+		// No log file yet: report zero rows rather than a half-built total.
+		rows, total = nil, stats.Row{Key: "TOTAL"}
+	}
+
+	// The machine formats always emit a well-formed document, empty log or
+	// not, so scripts never have to special-case "no records yet".
+	if format == stats.FormatTable {
+		if missing {
+			fmt.Fprintf(stdout, "no records yet (looked in %s) — start the proxy with `tokentrace serve` first\n", path)
+			return nil
+		}
+		if total.Requests == 0 {
+			fmt.Fprintln(stdout, "no records match the given filters")
+			return nil
+		}
+	}
+
+	w, done, err := openOutput(*out, stdout)
 	if err != nil {
 		return err
 	}
-	if total.Requests == 0 {
-		fmt.Fprintln(stdout, "no records match the given filters")
-		return nil
-	}
-	if err := stats.Render(stdout, groupBy, rows, total); err != nil {
+	if err := writeReport(w, format, groupBy, rows, total); err != nil {
+		_ = done(false)
 		return err
+	}
+	if err := done(true); err != nil {
+		return err
+	}
+	if *out != "" {
+		fmt.Fprintf(stderr, "wrote %d row(s) to %s\n", len(rows), *out)
 	}
 	if skipped > 0 {
 		fmt.Fprintf(stderr, "warning: skipped %d unparseable line(s) in %s\n", skipped, path)
 	}
 	return nil
+}
+
+func writeReport(w io.Writer, format stats.Format, by stats.By, rows []stats.Row, total stats.Row) error {
+	switch format {
+	case stats.FormatJSON:
+		return stats.RenderJSON(w, by, rows, total)
+	case stats.FormatCSV:
+		return stats.RenderCSV(w, rows)
+	default:
+		return stats.Render(w, by, rows, total)
+	}
+}
+
+// openOutput returns the writer for a report plus a done func that closes
+// an opened file. done(false) discards the close error on an earlier
+// failure; done(true) reports it, since a failed close means a short write.
+func openOutput(path string, stdout io.Writer) (io.Writer, func(ok bool) error, error) {
+	if path == "" {
+		return stdout, func(bool) error { return nil }, nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open --out: %w", err)
+	}
+	return f, func(ok bool) error {
+		cerr := f.Close()
+		if !ok || cerr == nil {
+			return nil
+		}
+		return fmt.Errorf("close --out: %w", cerr)
+	}, nil
 }
 
 func cmdTail(args []string, stdout, stderr io.Writer) error {

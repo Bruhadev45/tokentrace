@@ -1,0 +1,4 @@
+key,requests,input_tokens,output_tokens,cached_tokens,cache_creation_tokens,cost_usd,unpriced_requests,unknown_requests,avg_latency_ms,p95_latency_ms,cache_hit_rate
+claude-sonnet-4-5-20250929,3,1200,300,4800,640,0.045612,0,0,200,300,0.8000
+mystery-model,2,10,2,0,0,0.000000,2,0,60,70,0.0000
+(unknown),1,0,0,0,0,0.000000,0,1,40,40,
