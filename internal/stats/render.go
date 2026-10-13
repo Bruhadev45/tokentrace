@@ -7,6 +7,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/Bruhadev45/tokentrace/internal/live"
 	"github.com/Bruhadev45/tokentrace/internal/record"
 )
 
@@ -82,6 +83,21 @@ func FormatRecord(r record.Record) string {
 		tokens,
 		cost,
 	)
+}
+
+// FormatLive renders the `tokentrace tail --stats` footer line. A "*"
+// after the cost flags requests with no known price, as in the table.
+func FormatLive(s live.Snapshot) string {
+	p50 := "-"
+	if s.PerMinute > 0 {
+		p50 = comma(s.P50LatencyMS) + "ms"
+	}
+	cost := fmt.Sprintf("$%.4f", s.CostUSD)
+	if s.Unpriced > 0 {
+		cost += "*"
+	}
+	return fmt.Sprintf("last 60s: %d req/min, p50 %s | since start: %s req, %s",
+		s.PerMinute, p50, comma(int64(s.Requests)), cost)
 }
 
 // comma formats n with thousands separators ("1234567" -> "1,234,567").

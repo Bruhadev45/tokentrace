@@ -24,7 +24,10 @@ fmt:
 install:
 	go install $(LDFLAGS) ./cmd/tokentrace
 
-# demo seeds a throwaway record log and prints real stats output from it.
+# demo seeds a throwaway record log and prints real stats output from it,
+# then runs a real `tail --stats` while six records arrive and prints what
+# the terminal would show: on each line, only the text after the last
+# clear-line escape (\r ESC[2K) survives.
 demo:
 	@dir="$$(mktemp -d)" && \
 	TOKENTRACE_DIR="$$dir" go run ./scripts/seeddemo && \
@@ -34,6 +37,13 @@ demo:
 	TOKENTRACE_DIR="$$dir" go run $(LDFLAGS) ./cmd/tokentrace stats --by project --since 7d && \
 	echo && echo '$$ tokentrace stats --by day' && \
 	TOKENTRACE_DIR="$$dir" go run $(LDFLAGS) ./cmd/tokentrace stats --by day && \
+	echo && echo '$$ tokentrace tail --stats' && \
+	go build $(LDFLAGS) -o "$$dir/tokentrace" ./cmd/tokentrace && \
+	{ TOKENTRACE_DIR="$$dir" "$$dir/tokentrace" tail --stats > "$$dir/tail.out" 2>&1 & } && \
+	pid=$$! && trap 'kill $$pid 2>/dev/null' EXIT && \
+	sleep 1 && TOKENTRACE_DIR="$$dir" go run ./scripts/seeddemo -live 6 && sleep 2 && \
+	kill $$pid && wait $$pid && \
+	sed -e '/^following /d' -e "s/.*$$(printf '\033')\[2K//" "$$dir/tail.out" && \
 	rm -rf "$$dir"
 
 # cross builds every released platform. Proves the matrix compiles without

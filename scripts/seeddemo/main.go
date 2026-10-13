@@ -4,6 +4,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -25,13 +26,26 @@ type profile struct {
 	perDay   int
 }
 
+var profiles = []profile{
+	{"checkout-bot", "anthropic", "claude-sonnet-4-5-20250929", "/v1/messages", 1400, 420, 9600, 2400, 6},
+	{"checkout-bot", "anthropic", "claude-haiku-4-5-20251001", "/v1/messages", 700, 150, 5200, 900, 9},
+	{"docs-search", "openai", "gpt-4o-mini-2024-07-18", "/v1/chat/completions", 2100, 260, 1024, 1200, 8},
+	{"docs-search", "openai", "gpt-4.1-2025-04-14", "/v1/chat/completions", 3400, 700, 0, 3100, 3},
+}
+
 func main() {
+	live := flag.Int("live", 0, "append N records stamped now (for the tail demo) instead of the 3-day history")
+	flag.Parse()
 	dir := os.Getenv(record.EnvDir)
 	if dir == "" {
 		fmt.Fprintln(os.Stderr, "seeddemo: set TOKENTRACE_DIR to a throwaway directory first")
 		os.Exit(1)
 	}
-	if err := seed(dir); err != nil {
+	run := seed
+	if *live > 0 {
+		run = func(dir string) error { return seedLive(dir, *live) }
+	}
+	if err := run(dir); err != nil {
 		fmt.Fprintln(os.Stderr, "seeddemo:", err)
 		os.Exit(1)
 	}
@@ -44,13 +58,6 @@ func seed(dir string) error {
 	}
 	defer store.Close()
 
-	profiles := []profile{
-		{"checkout-bot", "anthropic", "claude-sonnet-4-5-20250929", "/v1/messages", 1400, 420, 9600, 2400, 6},
-		{"checkout-bot", "anthropic", "claude-haiku-4-5-20251001", "/v1/messages", 700, 150, 5200, 900, 9},
-		{"docs-search", "openai", "gpt-4o-mini-2024-07-18", "/v1/chat/completions", 2100, 260, 1024, 1200, 8},
-		{"docs-search", "openai", "gpt-4.1-2025-04-14", "/v1/chat/completions", 3400, 700, 0, 3100, 3},
-	}
-
 	rng := rand.New(rand.NewSource(7)) // deterministic sample data
 	now := time.Now()
 	for dayOffset := 2; dayOffset >= 0; dayOffset-- {
@@ -61,6 +68,26 @@ func seed(dir string) error {
 					return err
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// seedLive appends n records stamped now, cycling through the profiles,
+// so a running `tokentrace tail` sees them arrive.
+func seedLive(dir string, n int) error {
+	store, err := record.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	rng := rand.New(rand.NewSource(7))
+	for i := 0; i < n; i++ {
+		r := sample(rng, profiles[i%len(profiles)], time.Now(), i+1) // i+1: caches already warm
+		r.Time = time.Now()
+		if err := store.Append(r); err != nil {
+			return err
 		}
 	}
 	return nil

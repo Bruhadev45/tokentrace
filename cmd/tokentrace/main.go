@@ -34,7 +34,7 @@ Usage:
   tokentrace serve --upstream URL [--port 4141] [--project NAME]
   tokentrace stats [--project NAME] [--since 24h|7d|2026-08-01] [--by model|project|day]
                    [--json|--csv] [--out FILE]
-  tokentrace tail
+  tokentrace tail [--project NAME] [--stats]
   tokentrace prices
   tokentrace version
 
@@ -251,6 +251,7 @@ func cmdTail(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("tail", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	project := fs.String("project", "", "only show records for this project")
+	withStats := fs.Bool("stats", false, "keep a live footer on stderr: req/min and p50 latency over the last 60s, running cost")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -261,11 +262,19 @@ func cmdTail(args []string, stdout, stderr io.Writer) error {
 	ctx, stop := signalContext()
 	defer stop()
 	fmt.Fprintf(stderr, "following %s (Ctrl-C to stop)\n", path)
+
+	show := func(r record.Record) { fmt.Fprintln(stdout, stats.FormatRecord(r)) }
+	if *withStats {
+		footer := newLiveFooter(stdout, stderr, time.Now)
+		stopFooter := footer.start(footerRedrawInterval)
+		defer stopFooter()
+		show = footer.add
+	}
 	return record.Follow(ctx, path, record.DefaultFollowInterval, func(r record.Record) {
 		if *project != "" && r.Project != *project {
 			return
 		}
-		fmt.Fprintln(stdout, stats.FormatRecord(r))
+		show(r)
 	})
 }
 

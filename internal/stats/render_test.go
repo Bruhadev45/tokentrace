@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Bruhadev45/tokentrace/internal/live"
 	"github.com/Bruhadev45/tokentrace/internal/record"
 )
 
@@ -128,6 +129,42 @@ func TestFormatRecord(t *testing.T) {
 				if strings.Contains(line, bad) {
 					t.Errorf("FormatRecord() = %q, should not contain %q", line, bad)
 				}
+			}
+		})
+	}
+}
+
+func TestFormatLive(t *testing.T) {
+	tests := []struct {
+		name string
+		snap live.Snapshot
+		want string
+	}{
+		{
+			name: "nothing yet",
+			snap: live.Snapshot{},
+			want: "last 60s: 0 req/min, p50 - | since start: 0 req, $0.0000",
+		},
+		{
+			name: "busy minute",
+			snap: live.Snapshot{PerMinute: 12, P50LatencyMS: 1234, Requests: 1500, CostUSD: 1.23456},
+			want: "last 60s: 12 req/min, p50 1,234ms | since start: 1,500 req, $1.2346",
+		},
+		{
+			name: "idle window keeps the running cost",
+			snap: live.Snapshot{Requests: 3, CostUSD: 0.5},
+			want: "last 60s: 0 req/min, p50 - | since start: 3 req, $0.5000",
+		},
+		{
+			name: "unpriced requests are flagged",
+			snap: live.Snapshot{PerMinute: 1, P50LatencyMS: 80, Requests: 2, CostUSD: 0.01, Unpriced: 1},
+			want: "last 60s: 1 req/min, p50 80ms | since start: 2 req, $0.0100*",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := FormatLive(tt.snap); got != tt.want {
+				t.Errorf("FormatLive() = %q, want %q", got, tt.want)
 			}
 		})
 	}
