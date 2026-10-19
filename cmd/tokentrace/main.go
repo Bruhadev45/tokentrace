@@ -12,10 +12,13 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
+	"github.com/Bruhadev45/tokentrace/internal/config"
 	"github.com/Bruhadev45/tokentrace/internal/pricing"
 	"github.com/Bruhadev45/tokentrace/internal/proxy"
 	"github.com/Bruhadev45/tokentrace/internal/record"
@@ -31,14 +34,16 @@ A local reverse proxy that records token usage, latency and cache hits for
 every LLM API request, to an append-only JSONL log on your machine.
 
 Usage:
-  tokentrace serve --upstream URL [--port 4141] [--project NAME]
-  tokentrace stats [--project NAME] [--since 24h|7d|2026-08-01] [--by model|project|day]
-                   [--json|--csv] [--out FILE]
+  tokentrace serve [ALIAS|URL] [--upstream ALIAS|URL] [--port 4141] [--project NAME]
+  tokentrace stats [--project NAME] [--since 24h|7d|2026-08-01] [--until ...]
+                   [--by model|project|day] [--json|--csv] [--out FILE]
   tokentrace tail [--project NAME] [--stats]
   tokentrace prices
   tokentrace version
 
-Records live in ~/.tokentrace/records.jsonl (override dir: TOKENTRACE_DIR).
+Built-in upstream aliases: anthropic, openai (e.g. tokentrace serve anthropic).
+Records live in ~/.tokentrace/records.jsonl (override dir: TOKENTRACE_DIR);
+aliases and serve defaults can be set in config.toml in the same directory.
 `
 
 func main() {
@@ -82,29 +87,23 @@ func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
+// serveOptions is what serve runs with once flags and config are merged.
+type serveOptions struct {
+	upstream *url.URL
+	port     int
+	project  string
+}
+
 func cmdServe(args []string, stderr io.Writer) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	upstream := fs.String("upstream", "", "upstream base URL, e.g. https://api.anthropic.com (required)")
-	port := fs.Int("port", 4141, "local port to listen on")
-	project := fs.String("project", "default", "project label stamped on every record")
-	if err := fs.Parse(args); err != nil {
+	cfg, err := loadConfig()
+	if err != nil {
 		return err
 	}
-	if *upstream == "" {
-		fs.Usage()
-		return errors.New("--upstream is required")
-	}
-	u, err := url.Parse(*upstream)
+	opts, err := parseServeArgs(args, cfg, stderr)
 	if err != nil {
-		return fmt.Errorf("parse --upstream: %w", err)
+		return err
 	}
-	if u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("--upstream must be an absolute URL like https://api.openai.com, got %q", *upstream)
-	}
-	if *port < 1 || *port > 65535 {
-		return fmt.Errorf("--port out of range: %d", *port)
-	}
+	u := opts.upstream
 
 	dir, err := record.Dir()
 	if err != nil {
@@ -119,7 +118,7 @@ func cmdServe(args []string, stderr io.Writer) error {
 	logf := func(format string, a ...any) { fmt.Fprintf(stderr, format+"\n", a...) }
 	handler, err := proxy.New(proxy.Config{
 		Upstream: u,
-		Project:  *project,
+		Project:  opts.project,
 		Recorder: store,
 		Logf:     logf,
 	})
@@ -129,17 +128,73 @@ func cmdServe(args []string, stderr io.Writer) error {
 
 	ctx, stop := signalContext()
 	defer stop()
-	addr := fmt.Sprintf("127.0.0.1:%d", *port)
-	logf("tokentrace %s proxying http://%s -> %s (project=%s)", version, addr, u, *project)
+	addr := fmt.Sprintf("127.0.0.1:%d", opts.port)
+	logf("tokentrace %s proxying http://%s -> %s (project=%s)", version, addr, u, opts.project)
 	logf("recording usage to %s (Ctrl-C to stop)", store.Path())
 	return proxy.ListenAndServe(ctx, addr, handler, logf)
+}
+
+// loadConfig reads config.toml from the records directory, if present.
+func loadConfig() (config.Config, error) {
+	dir, err := record.Dir()
+	if err != nil {
+		return config.Config{}, err
+	}
+	return config.Load(filepath.Join(dir, config.FileName))
+}
+
+// parseServeArgs merges serve's flags over the config defaults. The
+// upstream may be given as a leading positional alias/URL ("serve
+// anthropic --port 4142"), a trailing one, or --upstream — but only once.
+func parseServeArgs(args []string, cfg config.Config, stderr io.Writer) (serveOptions, error) {
+	var positional string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		positional, args = args[0], args[1:]
+	}
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	upstream := fs.String("upstream", "", "upstream alias (anthropic, openai, or one from config.toml) or base URL")
+	port := fs.Int("port", cfg.Defaults.Port, "local port to listen on")
+	project := fs.String("project", cfg.Defaults.Project, "project label stamped on every record")
+	if err := fs.Parse(args); err != nil {
+		return serveOptions{}, err
+	}
+	switch {
+	case fs.NArg() == 1 && positional == "":
+		positional = fs.Arg(0)
+	case fs.NArg() > 0:
+		return serveOptions{}, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if positional != "" && *upstream != "" {
+		return serveOptions{}, errors.New("give the upstream once: as an argument or with --upstream, not both")
+	}
+	target := *upstream
+	if target == "" {
+		target = positional
+	}
+	if target == "" {
+		target = cfg.Defaults.Upstream
+	}
+	if target == "" {
+		fs.Usage()
+		return serveOptions{}, errors.New("--upstream is required (or name an alias: tokentrace serve anthropic)")
+	}
+	u, err := cfg.ResolveUpstream(target)
+	if err != nil {
+		return serveOptions{}, err
+	}
+	if *port < 1 || *port > 65535 {
+		return serveOptions{}, fmt.Errorf("--port out of range: %d", *port)
+	}
+	return serveOptions{upstream: u, port: *port, project: *project}, nil
 }
 
 func cmdStats(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	project := fs.String("project", "", "only include records for this project")
-	since := fs.String("since", "", `only include records after this ("30m", "24h", "7d" or "2026-08-01")`)
+	since := fs.String("since", "", `only include records from this point on ("30m", "24h", "7d" or "2026-08-01")`)
+	until := fs.String("until", "", `only include records before this (same forms as --since; exclusive)`)
 	by := fs.String("by", "model", "group by: model, project or day")
 	asJSON := fs.Bool("json", false, "write JSON instead of the terminal table")
 	asCSV := fs.Bool("csv", false, "write CSV instead of the terminal table")
@@ -161,9 +216,18 @@ func cmdStats(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	sinceT, err := stats.ParseSince(*since, time.Now())
+	now := time.Now()
+	sinceT, err := stats.ParseSince(*since, now)
 	if err != nil {
 		return err
+	}
+	untilT, err := stats.ParseUntil(*until, now)
+	if err != nil {
+		return err
+	}
+	if !sinceT.IsZero() && !untilT.IsZero() && !untilT.After(sinceT) {
+		return fmt.Errorf("--until (%s) must be later than --since (%s)",
+			untilT.Format(time.DateTime), sinceT.Format(time.DateTime))
 	}
 	path, err := record.DefaultPath()
 	if err != nil {
@@ -173,6 +237,7 @@ func cmdStats(args []string, stdout, stderr io.Writer) error {
 	rows, total, skipped, err := stats.Aggregate(path, groupBy, stats.Filter{
 		Project: *project,
 		Since:   sinceT,
+		Until:   untilT,
 	})
 	missing := errors.Is(err, os.ErrNotExist)
 	if err != nil && !missing {

@@ -33,7 +33,8 @@ func ParseBy(s string) (By, error) {
 // Filter restricts which records are aggregated. Zero values mean "all".
 type Filter struct {
 	Project string
-	Since   time.Time
+	Since   time.Time // inclusive lower bound
+	Until   time.Time // exclusive upper bound
 }
 
 // Row is one aggregated group of records.
@@ -118,6 +119,9 @@ func Aggregate(path string, by By, f Filter) (rows []Row, total Row, skipped int
 			return nil
 		}
 		if !f.Since.IsZero() && rec.Time.Before(f.Since) {
+			return nil
+		}
+		if !f.Until.IsZero() && !rec.Time.Before(f.Until) {
 			return nil
 		}
 		key := keyFor(by, rec)

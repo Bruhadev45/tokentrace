@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Bruhadev45/tokentrace/internal/config"
 	"github.com/Bruhadev45/tokentrace/internal/record"
 )
 
@@ -28,7 +29,11 @@ func TestRunDispatch(t *testing.T) {
 		{"serve rejects bad port", []string{"serve", "--upstream", "https://api.openai.com", "--port", "70000"}, "out of range", ""},
 		{"stats rejects bad by", []string{"stats", "--by", "week"}, "invalid --by", ""},
 		{"stats rejects bad since", []string{"stats", "--since", "yesterday"}, "invalid --since", ""},
+		{"stats rejects bad until", []string{"stats", "--until", "soon"}, "invalid --until", ""},
+		{"stats rejects inverted window", []string{"stats", "--since", "2026-08-02", "--until", "2026-08-01"}, "must be later than --since", ""},
+		{"serve rejects unknown alias", []string{"serve", "mistral"}, `unknown upstream "mistral"`, ""},
 	}
+	t.Setenv(record.EnvDir, t.TempDir()) // no stray config.toml from the real home dir
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -222,5 +227,102 @@ func TestStatsOutFileUnwritable(t *testing.T) {
 	err := run([]string{"stats", "--json", "--out", filepath.Join(t.TempDir(), "nope", "report.json")}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "open --out") {
 		t.Fatalf("error = %v, want an open --out error", err)
+	}
+}
+
+func TestParseServeArgs(t *testing.T) {
+	cfg, err := config.Parse(`[upstreams]
+gateway = "https://gw.example.com/llm"
+
+[defaults]
+port = 5000
+project = "from-config"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withDefault := cfg
+	withDefault.Defaults.Upstream = "gateway"
+
+	tests := []struct {
+		name        string
+		cfg         config.Config
+		args        []string
+		wantURL     string
+		wantPort    int
+		wantProject string
+		wantErr     string
+	}{
+		{name: "leading alias", cfg: cfg, args: []string{"anthropic"},
+			wantURL: "https://api.anthropic.com", wantPort: 5000, wantProject: "from-config"},
+		{name: "alias then flags", cfg: cfg, args: []string{"openai", "--port", "4142", "--project", "cli"},
+			wantURL: "https://api.openai.com", wantPort: 4142, wantProject: "cli"},
+		{name: "flags then alias", cfg: cfg, args: []string{"--port", "4142", "gateway"},
+			wantURL: "https://gw.example.com/llm", wantPort: 4142, wantProject: "from-config"},
+		{name: "--upstream takes an alias", cfg: cfg, args: []string{"--upstream", "gateway"},
+			wantURL: "https://gw.example.com/llm", wantPort: 5000, wantProject: "from-config"},
+		{name: "--upstream takes a URL", cfg: cfg, args: []string{"--upstream", "http://127.0.0.1:11434"},
+			wantURL: "http://127.0.0.1:11434", wantPort: 5000, wantProject: "from-config"},
+		{name: "config default upstream", cfg: withDefault, args: nil,
+			wantURL: "https://gw.example.com/llm", wantPort: 5000, wantProject: "from-config"},
+		{name: "built-in defaults", cfg: config.Default(), args: []string{"anthropic"},
+			wantURL: "https://api.anthropic.com", wantPort: 4141, wantProject: "default"},
+		{name: "no upstream anywhere", cfg: cfg, args: []string{"--port", "1"}, wantErr: "--upstream is required"},
+		{name: "upstream twice", cfg: cfg, args: []string{"anthropic", "--upstream", "openai"}, wantErr: "not both"},
+		{name: "two positionals", cfg: cfg, args: []string{"anthropic", "openai"}, wantErr: "unexpected arguments: openai"},
+		{name: "bad port", cfg: cfg, args: []string{"anthropic", "--port", "0"}, wantErr: "out of range"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			opts, err := parseServeArgs(tt.args, tt.cfg, &stderr)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseServeArgs(%v) error = %v", tt.args, err)
+			}
+			if opts.upstream.String() != tt.wantURL || opts.port != tt.wantPort || opts.project != tt.wantProject {
+				t.Errorf("got %s :%d %q, want %s :%d %q",
+					opts.upstream, opts.port, opts.project, tt.wantURL, tt.wantPort, tt.wantProject)
+			}
+		})
+	}
+}
+
+func TestServeReportsBrokenConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(record.EnvDir, dir)
+	if err := os.WriteFile(filepath.Join(dir, config.FileName), []byte("[defaults]\nprot = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"serve", "anthropic"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), `unknown key "prot" in [defaults]`) {
+		t.Fatalf("error = %v, want the config parse error", err)
+	}
+}
+
+func TestStatsUntilFiltersRecords(t *testing.T) {
+	// seedStats records carry the zero time, so they sit before any date.
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"stats", "--json", "--until", "2000-01-01"}, `"requests": 2`},
+		{[]string{"stats", "--json", "--since", "1999-01-01", "--until", "2000-01-01"}, `"rows": [],`},
+	}
+	for _, tt := range tests {
+		seedStats(t)
+		var stdout, stderr bytes.Buffer
+		if err := run(tt.args, &stdout, &stderr); err != nil {
+			t.Fatalf("run(%v) error = %v", tt.args, err)
+		}
+		if !strings.Contains(stdout.String(), tt.want) {
+			t.Errorf("run(%v) stdout missing %q:\n%s", tt.args, tt.want, stdout.String())
+		}
 	}
 }

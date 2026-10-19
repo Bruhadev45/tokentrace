@@ -51,11 +51,16 @@ make build          # produces ./tokentrace
 
    ```sh
    # Anthropic
-   tokentrace serve --upstream https://api.anthropic.com --project my-app
+   tokentrace serve anthropic --project my-app
 
    # OpenAI (in another terminal / for another project, pick another port)
-   tokentrace serve --upstream https://api.openai.com --port 4142 --project my-app
+   tokentrace serve openai --port 4142 --project my-app
    ```
+
+   `anthropic` and `openai` are built-in aliases for their API base URLs;
+   any other endpoint can be given as a full URL
+   (`tokentrace serve https://gateway.example.com`) or named in the
+   [config file](#config-file).
 
 2. Point your client at it by changing **only the base URL**. Auth headers
    pass through untouched, so keep using your normal API key:
@@ -74,6 +79,7 @@ make build          # produces ./tokentrace
    tokentrace stats                 # spend by model
    tokentrace stats --by project    # spend by project label
    tokentrace stats --by day --since 7d
+   tokentrace stats --since 2026-10-01 --until 2026-11-01   # one month
    tokentrace stats --json          # same numbers, machine-readable
    tokentrace tail                  # live view: one line per request
    tokentrace tail --stats          # same, plus a req/min · p50 · cost footer
@@ -83,8 +89,8 @@ make build          # produces ./tokentrace
 
 | Command | What it does |
 | --- | --- |
-| `serve --upstream URL [--port 4141] [--project NAME]` | Run the recording proxy on 127.0.0.1. `--project` labels every record. |
-| `stats [--project NAME] [--since 24h\|7d\|2026-08-01] [--by model\|project\|day] [--json\|--csv] [--out FILE]` | Aggregated report: requests, tokens, est. cost, avg/p95 latency, cache-hit rate. Table by default; `--json`/`--csv` for machines, `--out` to write a file. |
+| `serve [ALIAS\|URL] [--upstream ALIAS\|URL] [--port 4141] [--project NAME]` | Run the recording proxy on 127.0.0.1. The upstream is an alias (`anthropic`, `openai`, or one from the config file) or a base URL, given once — as the argument or with `--upstream`. `--project` labels every record. |
+| `stats [--project NAME] [--since 24h\|7d\|2026-08-01] [--until ...] [--by model\|project\|day] [--json\|--csv] [--out FILE]` | Aggregated report: requests, tokens, est. cost, avg/p95 latency, cache-hit rate. `--since` is inclusive, `--until` exclusive and takes the same forms, so `--since 2026-10-01 --until 2026-10-02` is exactly one day. Table by default; `--json`/`--csv` for machines, `--out` to write a file. |
 | `tail [--project NAME] [--stats]` | Follow the log live; prints one formatted line per new record (polls every 500ms). `--stats` adds a footer pinned to the last line: requests/min and p50 latency over the last 60s, plus requests and cost since `tail` started. |
 | `prices` | Print the built-in price table. |
 | `version` | Print the build version. |
@@ -92,6 +98,33 @@ make build          # produces ./tokentrace
 Records are appended to `~/.tokentrace/records.jsonl` — one JSON object per
 line. Set `TOKENTRACE_DIR` to use a different directory (handy for keeping
 projects or tests isolated).
+
+## Config file
+
+Optional. tokentrace reads `config.toml` from the same directory as the
+records (`~/.tokentrace/config.toml`, or `$TOKENTRACE_DIR/config.toml`);
+without one it behaves exactly as if the file were empty.
+
+```toml
+# ~/.tokentrace/config.toml
+[upstreams]                       # aliases for `tokentrace serve NAME`
+gateway = "https://llm-gateway.internal.example.com"
+local   = "http://127.0.0.1:11434"
+openai  = "https://eu.api.openai.com"   # overrides the built-in alias
+
+[defaults]                        # used when the flag is not given
+upstream = "gateway"              # so a bare `tokentrace serve` works
+port     = 4141
+project  = "my-app"
+```
+
+Flags always win over `[defaults]`. Only this subset of TOML is accepted —
+bare keys, `"basic"` / `'literal'` strings, integers, `#` comments and the
+two tables above. Anything else (arrays, dotted keys, booleans, unknown
+keys or tables) is an error that names the key or line, rather than being
+silently ignored: a typo like `prot = 4142` fails loudly instead of
+leaving you on the default port. The parser is stdlib-only and fuzz-tested
+(`go test ./internal/config -fuzz=FuzzParseTOML`).
 
 ## Example output
 

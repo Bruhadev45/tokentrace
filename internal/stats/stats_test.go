@@ -131,6 +131,28 @@ func TestAggregate(t *testing.T) {
 			},
 		},
 		{
+			name:     "until filter is exclusive",
+			by:       ByModel,
+			filter:   Filter{Until: testNow},
+			wantKeys: []string{"m2"},
+			check: func(t *testing.T, rows []Row, total Row) {
+				if total.Requests != 1 {
+					t.Errorf("until-filtered total requests = %d, want 1 (only yesterday's)", total.Requests)
+				}
+			},
+		},
+		{
+			name:     "since and until bound a window",
+			by:       ByProject,
+			filter:   Filter{Since: testYesterday, Until: testNow.Add(time.Nanosecond)},
+			wantKeys: []string{"p1", "p2"},
+			check: func(t *testing.T, rows []Row, total Row) {
+				if total.Requests != 4 {
+					t.Errorf("window total requests = %d, want 4", total.Requests)
+				}
+			},
+		},
+		{
 			name:     "filters can match nothing",
 			by:       ByModel,
 			filter:   Filter{Project: "no-such-project"},

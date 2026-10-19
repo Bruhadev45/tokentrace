@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -37,5 +38,23 @@ func TestParseSince(t *testing.T) {
 				t.Errorf("ParseSince(%q) = %v, want %v", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseUntil(t *testing.T) {
+	now := time.Date(2026, 8, 31, 15, 30, 0, 0, time.Local)
+	got, err := ParseUntil("2026-08-02", now)
+	if err != nil || !got.Equal(time.Date(2026, 8, 2, 0, 0, 0, 0, time.Local)) {
+		t.Errorf("ParseUntil(date) = %v, %v", got, err)
+	}
+	got, err = ParseUntil("24h", now)
+	if err != nil || !got.Equal(now.Add(-24*time.Hour)) {
+		t.Errorf("ParseUntil(24h) = %v, %v", got, err)
+	}
+	if got, err := ParseUntil("", now); err != nil || !got.IsZero() {
+		t.Errorf("ParseUntil(\"\") = %v, %v, want zero time", got, err)
+	}
+	if _, err := ParseUntil("soon", now); err == nil || !strings.Contains(err.Error(), "invalid --until") {
+		t.Errorf("ParseUntil(soon) error = %v, want it to name --until", err)
 	}
 }
